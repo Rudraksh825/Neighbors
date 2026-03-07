@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nn-chain-explorer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f1117; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+#header { display: flex; align-items: center; padding: 8px 16px; background: #1a1d27; border-bottom: 1px solid #2a2d3a; gap: 16px; flex-shrink: 0; }
+#header h1 { font-size: 14px; font-weight: 600; color: #a0a8c0; letter-spacing: 0.5px; }
+.model-btn { padding: 4px 12px; border-radius: 4px; border: 1px solid #3a3d4a; background: #252836; color: #a0a8c0; cursor: pointer; font-size: 12px; transition: all 0.15s; }
+.model-btn.active { background: #4a6fa5; border-color: #6a8fc5; color: #fff; }
+.model-btn:hover:not(.active) { background: #2e3140; }
+#color-select { padding: 4px 8px; background: #252836; border: 1px solid #3a3d4a; color: #e0e0e0; border-radius: 4px; font-size: 12px; }
+.sep { width: 1px; height: 20px; background: #2a2d3a; }
+#loading-overlay, #error-overlay { position: fixed; inset: 0; background: #0f1117; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 9999; gap: 16px; }
+#error-overlay { display: none; }
+.spinner { width: 40px; height: 40px; border: 3px solid #2a2d3a; border-top-color: #4a6fa5; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.error-box { background: #1a1d27; border: 1px solid #c0392b; border-radius: 8px; padding: 24px 32px; max-width: 500px; text-align: center; }
+.error-box h2 { color: #e74c3c; margin-bottom: 12px; }
+.error-box code { background: #0f1117; padding: 2px 6px; border-radius: 3px; font-size: 13px; color: #7ec8e3; }
+
+#main { display: flex; flex: 1; overflow: hidden; }
+#graph-container { flex: 1; position: relative; overflow: hidden; }
+svg#graph { width: 100%; height: 100%; }
+#tooltip { position: absolute; background: #1a1d27; border: 1px solid #3a3d4a; border-radius: 6px; padding: 8px 10px; font-size: 12px; pointer-events: none; display: none; max-width: 180px; z-index: 100; }
+#tooltip img { width: 64px; height: 64px; display: block; margin-bottom: 6px; border-radius: 3px; }
+#tooltip .tt-path { color: #7a8090; font-size: 10px; word-break: break-all; }
+#tooltip .tt-class { color: #a0c8f0; font-weight: 600; }
+#tooltip .tt-hub { color: #f0c060; }
+
+#stats-panel { width: 300px; background: #1a1d27; border-left: 1px solid #2a2d3a; overflow-y: auto; padding: 12px; flex-shrink: 0; }
+#stats-panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #6a7080; margin: 12px 0 8px; }
+#stats-panel h3:first-child { margin-top: 0; }
+.chart-container { background: #0f1117; border-radius: 4px; padding: 4px; margin-bottom: 8px; }
+.hub-gallery { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.hub-thumb { position: relative; cursor: pointer; }
+.hub-thumb img { width: 100%; aspect-ratio: 1; display: block; border-radius: 3px; }
+.hub-thumb .hub-score { position: absolute; bottom: 1px; right: 2px; font-size: 9px; color: #fff; background: rgba(0,0,0,0.7); padding: 1px 3px; border-radius: 2px; }
+
+#chain-inspector { height: 110px; background: #1a1d27; border-top: 1px solid #2a2d3a; flex-shrink: 0; padding: 8px 12px; overflow-x: auto; display: flex; align-items: center; gap: 8px; }
+#chain-inspector .ci-empty { color: #4a5060; font-size: 13px; }
+.chain-node { display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; }
+.chain-node img { width: 64px; height: 64px; border-radius: 4px; border: 2px solid transparent; }
+.chain-node.cycle-node img { border-color: #f0c060; }
+.chain-node.active img { border-color: #4a6fa5; box-shadow: 0 0 8px #4a6fa5; }
+.chain-arrow { color: #4a5060; font-size: 18px; flex-shrink: 0; }
+.chain-cycle-marker { font-size: 18px; color: #f0c060; flex-shrink: 0; }
+.chain-meta { font-size: 11px; color: #7a8090; flex-shrink: 0; white-space: nowrap; align-self: flex-end; margin-left: 8px; }
+.chain-meta span { color: #a0c8f0; }
+</style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <div>Loading data.json...</div>
+</div>
+
+<div id="error-overlay">
+  <div class="error-box">
+    <h2 id="error-title">Error</h2>
+    <p id="error-msg"></p>
+  </div>
+</div>
+
+<div id="header">
+  <h1>nn-chain-explorer</h1>
+  <div class="sep"></div>
+  <button class="model-btn active" data-model="dinov2">DINOv2</button>
+  <button class="model-btn" data-model="clip">CLIP</button>
+  <div class="sep"></div>
+  <label style="font-size:12px;color:#7a8090;">Color:</label>
+  <select id="color-select">
+    <option value="class">Class</option>
+    <option value="tau">Transient length τ</option>
+    <option value="hub">Hub score</option>
+  </select>
+</div>
+
+<div id="main">
+  <div id="graph-container">
+    <svg id="graph"></svg>
+    <div id="tooltip">
+      <img id="tt-img" src="" alt="">
+      <div class="tt-class" id="tt-class"></div>
+      <div class="tt-hub" id="tt-hub"></div>
+      <div class="tt-path" id="tt-path"></div>
+    </div>
+  </div>
+
+  <div id="stats-panel">
+    <h3>τ Distribution</h3>
+    <div class="chart-container"><svg id="chart-tau" width="276" height="100"></svg></div>
+    <h3>Cycle Length ℓ</h3>
+    <div class="chart-container"><svg id="chart-cyc" width="276" height="100"></svg></div>
+    <h3>Hub In-degree (log)</h3>
+    <div class="chart-container"><svg id="chart-hub" width="276" height="100"></svg></div>
+    <h3>Top-10 Hub Gallery</h3>
+    <div class="hub-gallery" id="hub-gallery"></div>
+  </div>
+</div>
+
+<div id="chain-inspector">
+  <span class="ci-empty">Click a node to inspect its chain.</span>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"
+  onerror="showError('D3 not loaded','D3 failed to load from CDN. Internet required for visualization.')">
+</script>
+<script>
+(function() {
+'use strict';
+
+function showError(title, msg) {
+  document.getElementById('loading-overlay').style.display = 'none';
+  const ov = document.getElementById('error-overlay');
+  ov.style.display = 'flex';
+  document.getElementById('error-title').textContent = title;
+  document.getElementById('error-msg').innerHTML = msg;
+}
+
+// ── Color schemes ────────────────────────────────────────────────────────────
+
+const CLASS_COLORS = [
+  '#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c',
+  '#3498db','#9b59b6','#e91e63','#00bcd4','#8bc34a'
+];
+
+// ── State ────────────────────────────────────────────────────────────────────
+
+let G = null;          // loaded data.json
+let activeModel = 'dinov2';
+let colorMode = 'class';
+let simulation = null;
+let nodes = [];
+let links = [];
+let nodeById = {};
+let animTimeout = null;
+
+// ── Load data ────────────────────────────────────────────────────────────────
+
+fetch('./data.json')
+  .then(r => {
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })
+  .then(data => {
+    G = data;
+    document.getElementById('loading-overlay').style.display = 'none';
+    init();
+  })
+  .catch(err => {
+    showError(
+      'data.json not found',
+      'Run <code>python main.py export</code> first, then open this file ' +
+      'from the viz/ directory or via:<br><code>python -m http.server 8080 --directory viz</code>'
+    );
+  });
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+
+function init() {
+  document.querySelectorAll('.model-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.model-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeModel = btn.dataset.model;
+      updateGraph();
+      updateStats();
+    });
+  });
+
+  document.getElementById('color-select').addEventListener('change', e => {
+    colorMode = e.target.value;
+    updateNodeColors();
+  });
+
+  buildGraph();
+  updateStats();
+}
+
+// ── Graph ────────────────────────────────────────────────────────────────────
+
+function getModelData() {
+  return G[activeModel];
+}
+
+function buildGraph() {
+  const svg = d3.select('#graph');
+  const container = document.getElementById('graph-container');
+  const W = container.clientWidth;
+  const H = container.clientHeight;
+
+  svg.selectAll('*').remove();
+
+  const md = getModelData();
+  const nnMap = md.nn_map;
+  const chains = md.chains;
+  const inDegree = new Array(G.images.length).fill(0);
+  nnMap.forEach(t => inDegree[t]++);
+
+  const cycleNodes = new Set();
+  G.images.forEach((_, i) => {
+    const c = chains[String(i)];
+    if (c && c.cycle_nodes) c.cycle_nodes.forEach(n => cycleNodes.add(n));
+  });
+
+  const tauVals = G.images.map((_, i) => {
+    const c = chains[String(i)];
+    return c ? c.transient_length : 0;
+  });
+  const maxTau = Math.max(...tauVals, 1);
+  const maxHub = Math.max(...inDegree, 1);
+
+  const classNames = [...new Set(G.images.map(im => im.class))].sort();
+  const classIdx = {};
+  classNames.forEach((c, i) => classIdx[c] = i);
+
+  nodeById = {};
+  nodes = G.images.map((im, i) => {
+    const n = {
+      id: i,
+      path: im.path,
+      cls: im.class,
+      clsIdx: classIdx[im.class] ?? 0,
+      thumbnail: im.thumbnail,
+      hub: inDegree[i],
+      tau: tauVals[i],
+      isCycle: cycleNodes.has(i),
+      x: W / 2 + (Math.random() - 0.5) * W * 0.8,
+      y: H / 2 + (Math.random() - 0.5) * H * 0.8,
+    };
+    nodeById[i] = n;
+    return n;
+  });
+
+  links = nnMap.map((target, source) => ({ source, target }));
+
+  const rScale = d3.scaleSqrt().domain([0, maxHub]).range([4, 18]);
+
+  // SVG layers
+  const zoomG = svg.append('g').attr('id', 'zoom-g');
+  const linkG = zoomG.append('g').attr('id', 'links');
+  const nodeG = zoomG.append('g').attr('id', 'nodes');
+
+  // Zoom
+  svg.call(d3.zoom().scaleExtent([0.1, 8]).on('zoom', e => {
+    zoomG.attr('transform', e.transform);
+  }));
+
+  // Draw links (arrows)
+  svg.append('defs').append('marker')
+    .attr('id', 'arrow')
+    .attr('viewBox', '0 -4 8 8')
+    .attr('refX', 14)
+    .attr('refY', 0)
+    .attr('markerWidth', 4)
+    .attr('markerHeight', 4)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-4L8,0L0,4')
+    .attr('fill', '#3a4050');
+
+  const linkSel = linkG.selectAll('line')
+    .data(links)
+    .join('line')
+    .attr('stroke', '#2a3040')
+    .attr('stroke-width', 0.8)
+    .attr('marker-end', 'url(#arrow)')
+    .attr('opacity', 0.6);
+
+  // Draw nodes
+  const nodeSel = nodeG.selectAll('g.node')
+    .data(nodes)
+    .join('g')
+    .attr('class', 'node')
+    .attr('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', (event, d) => { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+      .on('end', (event, d) => { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+    )
+    .on('mouseover', onNodeHover)
+    .on('mousemove', onNodeMouseMove)
+    .on('mouseout', onNodeOut)
+    .on('click', onNodeClick);
+
+  nodeSel.append('circle')
+    .attr('class', 'node-ring')
+    .attr('r', d => rScale(d.hub) + 2)
+    .attr('fill', 'none')
+    .attr('stroke', d => d.isCycle ? '#f0c060' : 'none')
+    .attr('stroke-width', 2);
+
+  nodeSel.append('circle')
+    .attr('class', 'node-circle')
+    .attr('r', d => rScale(d.hub));
+
+  updateNodeColors();
+
+  // Simulation
+  simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(30).strength(0.3))
+    .force('charge', d3.forceManyBody().strength(-60))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .force('collision', d3.forceCollide(d => rScale(d.hub) + 3))
+    .on('tick', () => {
+      linkSel
+        .attr('x1', d => nodes[d.source.id ?? d.source].x)
+        .attr('y1', d => nodes[d.source.id ?? d.source].y)
+        .attr('x2', d => nodes[d.target.id ?? d.target].x)
+        .attr('y2', d => nodes[d.target.id ?? d.target].y);
+      nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+  window._nodeSel = nodeSel;
+  window._linkSel = linkSel;
+  window._rScale = rScale;
+  window._cycleNodes = cycleNodes;
+}
+
+function updateGraph() {
+  buildGraph();
+}
+
+function updateNodeColors() {
+  if (!window._nodeSel) return;
+  const md = getModelData();
+  const inDeg = new Array(G.images.length).fill(0);
+  md.nn_map.forEach(t => inDeg[t]++);
+  const maxHub = Math.max(...inDeg, 1);
+  const maxTau = Math.max(...G.images.map((_, i) => {
+    const c = md.chains[String(i)];
+    return c ? c.transient_length : 0;
+  }), 1);
+
+  const tauColor = d3.scaleSequential(d3.interpolateViridis).domain([0, maxTau]);
+  const hubColor = d3.scaleSequential(d3.interpolateOrRd).domain([0, maxHub]);
+
+  window._nodeSel.select('circle.node-circle')
+    .attr('fill', d => {
+      if (colorMode === 'class') return CLASS_COLORS[d.clsIdx % CLASS_COLORS.length];
+      if (colorMode === 'tau') return tauColor(d.tau);
+      return hubColor(d.hub);
+    });
+}
+
+// ── Tooltip ──────────────────────────────────────────────────────────────────
+
+function onNodeHover(event, d) {
+  const tt = document.getElementById('tooltip');
+  document.getElementById('tt-img').src = d.thumbnail;
+  document.getElementById('tt-class').textContent = d.cls;
+  document.getElementById('tt-hub').textContent = `Hub score: ${d.hub}`;
+  document.getElementById('tt-path').textContent = d.path;
+  tt.style.display = 'block';
+}
+
+function onNodeMouseMove(event) {
+  const tt = document.getElementById('tooltip');
+  const cont = document.getElementById('graph-container');
+  const rect = cont.getBoundingClientRect();
+  let x = event.clientX - rect.left + 12;
+  let y = event.clientY - rect.top + 12;
+  if (x + 190 > rect.width) x -= 200;
+  if (y + 120 > rect.height) y -= 130;
+  tt.style.left = x + 'px';
+  tt.style.top = y + 'px';
+}
+
+function onNodeOut() {
+  document.getElementById('tooltip').style.display = 'none';
+}
+
+// ── Click / Chain Animation ──────────────────────────────────────────────────
+
+let selectedNodeId = null;
+
+function onNodeClick(event, d) {
+  event.stopPropagation();
+  if (animTimeout) clearTimeout(animTimeout);
+  selectedNodeId = d.id;
+
+  const md = getModelData();
+  const chain = md.chains[String(d.id)];
+  if (!chain) return;
+
+  const chainSeq = chain.chain;
+  const cycleEntry = chain.cycle_entry_node;
+  const chainSet = new Set(chainSeq);
+
+  // Fade non-chain nodes
+  window._nodeSel.select('circle.node-circle')
+    .attr('opacity', nd => chainSet.has(nd.id) ? 1.0 : 0.12);
+  window._nodeSel.select('circle.node-ring')
+    .attr('opacity', nd => chainSet.has(nd.id) ? 1.0 : 0.12);
+  window._linkSel.attr('opacity', 0.05);
+
+  // Animate step by step
+  let step = 0;
+  function animStep() {
+    if (step >= chainSeq.length) return;
+    const nid = chainSeq[step];
+    window._nodeSel.filter(nd => nd.id === nid)
+      .select('circle.node-circle')
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 2)
+      .transition().duration(300)
+      .attr('stroke-width', 0);
+    step++;
+    if (step < chainSeq.length) {
+      animTimeout = setTimeout(animStep, 400);
+    }
+  }
+  animStep();
+
+  // Chain inspector
+  showChainInspector(d.id, chain);
+
+  // Reset on background click
+  d3.select('#graph').on('click.reset', () => {
+    clearSelection();
+    d3.select('#graph').on('click.reset', null);
+  });
+}
+
+function clearSelection() {
+  if (animTimeout) clearTimeout(animTimeout);
+  selectedNodeId = null;
+  window._nodeSel.select('circle.node-circle').attr('opacity', 1).attr('stroke', 'none');
+  window._nodeSel.select('circle.node-ring').attr('opacity', 1);
+  window._linkSel.attr('opacity', 0.6);
+  document.getElementById('chain-inspector').innerHTML = '<span class="ci-empty">Click a node to inspect its chain.</span>';
+}
+
+function showChainInspector(nodeId, chain) {
+  const ci = document.getElementById('chain-inspector');
+  ci.innerHTML = '';
+
+  const chainSeq = chain.chain;
+  const cycleEntry = chain.cycle_entry_node;
+  const tau = chain.transient_length;
+  const len = chain.cycle_length;
+
+  // Show up to 12 nodes to avoid overflow; truncate in middle if needed
+  const maxShow = 12;
+  let displaySeq = chainSeq;
+  let truncated = false;
+  if (chainSeq.length > maxShow) {
+    displaySeq = [...chainSeq.slice(0, 5), -1, ...chainSeq.slice(-5)];
+    truncated = true;
+  }
+
+  displaySeq.forEach((nid, idx) => {
+    if (nid === -1) {
+      const el = document.createElement('div');
+      el.className = 'chain-arrow';
+      el.textContent = '…';
+      ci.appendChild(el);
+      return;
+    }
+
+    const img = G.images[nid];
+    if (!img) return;
+
+    const isCycleNode = nid === cycleEntry || (chain.cycle_nodes && chain.cycle_nodes.includes(nid));
+    const isActive = nid === nodeId;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chain-node' + (isCycleNode ? ' cycle-node' : '') + (isActive ? ' active' : '');
+
+    const imgEl = document.createElement('img');
+    imgEl.src = img.thumbnail;
+    imgEl.title = img.path;
+    wrap.appendChild(imgEl);
+
+    const label = document.createElement('div');
+    label.style.cssText = 'font-size:9px;color:#6a7080;max-width:68px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;';
+    label.textContent = img.class;
+    wrap.appendChild(label);
+
+    ci.appendChild(wrap);
+
+    // Arrow (not after last)
+    if (idx < displaySeq.length - 1 && displaySeq[idx + 1] !== -1) {
+      const arrow = document.createElement('div');
+      arrow.className = 'chain-arrow';
+      arrow.textContent = '→';
+      ci.appendChild(arrow);
+    }
+
+    // Cycle marker after cycle entry
+    if (nid === cycleEntry && idx === displaySeq.length - 1) {
+      const mark = document.createElement('div');
+      mark.className = 'chain-cycle-marker';
+      mark.textContent = '↻';
+      ci.appendChild(mark);
+    }
+  });
+
+  // Meta info
+  const meta = document.createElement('div');
+  meta.className = 'chain-meta';
+  const agreeStr = getAgreement(nodeId);
+  meta.innerHTML = `τ=<span>${tau}</span>  ℓ=<span>${len === -1 ? '?' : len}</span>  ${agreeStr}`;
+  ci.appendChild(meta);
+}
+
+function getAgreement(nodeId) {
+  if (!G.dinov2 || !G.clip) return '';
+  const nn_d = G.dinov2.nn_map[nodeId];
+  const nn_c = G.clip.nn_map[nodeId];
+  const agree = nn_d === nn_c;
+  return `NN agrees: <span style="color:${agree ? '#2ecc71' : '#e74c3c'}">${agree ? 'Yes' : 'No'}</span>`;
+}
+
+// ── Stats Panel ──────────────────────────────────────────────────────────────
+
+function updateStats() {
+  const md = getModelData();
+  const stats = md.stats;
+  if (!stats) return;
+
+  drawHistogram('#chart-tau', stats.transient, 'τ');
+  drawHistogram('#chart-cyc', stats.cycle_length, 'ℓ');
+  drawHubHistogram('#chart-hub', stats.hub);
+  drawHubGallery(md);
+}
+
+function drawHistogram(sel, data, label) {
+  const svg = d3.select(sel);
+  svg.selectAll('*').remove();
+  if (!data || !data.histogram || !data.histogram.counts) return;
+
+  const counts = data.histogram.counts;
+  const edges = data.histogram.bin_edges;
+  if (!counts.length) return;
+
+  const W = 276, H = 100, margin = { top: 4, right: 8, bottom: 20, left: 28 };
+  const w = W - margin.left - margin.right;
+  const h = H - margin.top - margin.bottom;
+
+  const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+  const x = d3.scaleBand()
+    .domain(d3.range(counts.length))
+    .range([0, w])
+    .padding(0.1);
+
+  const y = d3.scaleLinear()
+    .domain([0, d3.max(counts)])
+    .range([h, 0]);
+
+  g.append('g').attr('transform', `translate(0,${h})`)
+    .call(d3.axisBottom(x).tickValues(x.domain().filter((_, i) => i % Math.ceil(counts.length / 6) === 0)).tickFormat(i => Math.round(edges[i])))
+    .call(g => g.select('.domain').attr('stroke', '#3a4050'))
+    .call(g => g.selectAll('.tick line').attr('stroke', '#3a4050'))
+    .call(g => g.selectAll('.tick text').attr('fill', '#6a7080').attr('font-size', 9));
+
+  g.append('g')
+    .call(d3.axisLeft(y).ticks(3))
+    .call(g => g.select('.domain').attr('stroke', '#3a4050'))
+    .call(g => g.selectAll('.tick line').attr('stroke', '#3a4050'))
+    .call(g => g.selectAll('.tick text').attr('fill', '#6a7080').attr('font-size', 9));
+
+  g.selectAll('rect')
+    .data(counts)
+    .join('rect')
+    .attr('x', (_, i) => x(i))
+    .attr('y', d => y(d))
+    .attr('width', x.bandwidth())
+    .attr('height', d => h - y(d))
+    .attr('fill', '#4a6fa5')
+    .attr('opacity', 0.8);
+
+  svg.append('text').attr('x', W / 2).attr('y', H - 2)
+    .attr('text-anchor', 'middle').attr('fill', '#6a7080').attr('font-size', 9)
+    .text(label);
+}
+
+function drawHubHistogram(sel, hubData) {
+  const svg = d3.select(sel);
+  svg.selectAll('*').remove();
+  if (!hubData || !hubData.in_degree) return;
+
+  const inDeg = hubData.in_degree;
+  const W = 276, H = 100, margin = { top: 4, right: 8, bottom: 20, left: 32 };
+  const w = W - margin.left - margin.right;
+  const h = H - margin.top - margin.bottom;
+
+  // Bin by value
+  const maxDeg = Math.max(...inDeg);
+  const bins = new Array(maxDeg + 1).fill(0);
+  inDeg.forEach(d => bins[d]++);
+  // Remove zero-degree leading zeros for display
+  const nonZero = bins.map((count, deg) => ({ deg, count })).filter(d => d.count > 0);
+
+  const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+  const x = d3.scaleBand()
+    .domain(nonZero.map(d => d.deg))
+    .range([0, w])
+    .padding(0.1);
+
+  const maxCount = Math.max(...nonZero.map(d => d.count), 1);
+  const y = d3.scaleLog()
+    .domain([0.5, maxCount * 1.5])
+    .range([h, 0])
+    .clamp(true);
+
+  g.append('g').attr('transform', `translate(0,${h})`)
+    .call(d3.axisBottom(x).tickValues(x.domain().filter((_, i) => i % Math.ceil(nonZero.length / 5) === 0)))
+    .call(g => g.select('.domain').attr('stroke', '#3a4050'))
+    .call(g => g.selectAll('.tick line').attr('stroke', '#3a4050'))
+    .call(g => g.selectAll('.tick text').attr('fill', '#6a7080').attr('font-size', 9));
+
+  g.append('g')
+    .call(d3.axisLeft(y).ticks(3, '~s'))
+    .call(g => g.select('.domain').attr('stroke', '#3a4050'))
+    .call(g => g.selectAll('.tick line').attr('stroke', '#3a4050'))
+    .call(g => g.selectAll('.tick text').attr('fill', '#6a7080').attr('font-size', 9));
+
+  g.selectAll('rect')
+    .data(nonZero)
+    .join('rect')
+    .attr('x', d => x(d.deg))
+    .attr('y', d => y(Math.max(d.count, 0.5)))
+    .attr('width', x.bandwidth())
+    .attr('height', d => h - y(Math.max(d.count, 0.5)))
+    .attr('fill', '#e07040')
+    .attr('opacity', 0.8);
+
+  svg.append('text').attr('x', W / 2).attr('y', H - 2)
+    .attr('text-anchor', 'middle').attr('fill', '#6a7080').attr('font-size', 9)
+    .text('in-degree (log)');
+}
+
+function drawHubGallery(md) {
+  const gallery = document.getElementById('hub-gallery');
+  gallery.innerHTML = '';
+  if (!md.stats || !md.stats.hub || !md.stats.hub.in_degree) return;
+
+  const inDeg = md.stats.hub.in_degree;
+  const ranked = inDeg.map((d, i) => ({ i, d })).sort((a, b) => b.d - a.d).slice(0, 10);
+
+  ranked.forEach(({ i, d }) => {
+    const img = G.images[i];
+    if (!img) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'hub-thumb';
+    wrap.title = `${img.path}\nHub score: ${d}`;
+
+    const imgEl = document.createElement('img');
+    imgEl.src = img.thumbnail;
+    wrap.appendChild(imgEl);
+
+    const score = document.createElement('div');
+    score.className = 'hub-score';
+    score.textContent = d;
+    wrap.appendChild(score);
+
+    wrap.addEventListener('click', () => {
+      const nd = nodeById[i];
+      if (nd) onNodeClick({ stopPropagation: () => {} }, nd);
+    });
+
+    gallery.appendChild(wrap);
+  });
+}
+
+})();
+</script>
+</body>
+</html>
