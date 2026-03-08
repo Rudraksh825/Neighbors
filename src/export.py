@@ -50,6 +50,45 @@ def _load_json(path: Path, label: str) -> dict:
         return json.load(f)
 
 
+VIZ_MAX_NODES = 1000  # max nodes to render in D3 visualization
+VIZ_TOP_HUBS = 500   # always include top-N hubs
+
+
+def _select_viz_nodes(image_index: list[dict], nn_map_d: list | None, nn_map_c: list | None) -> list[int]:
+    """
+    For large datasets (N > VIZ_MAX_NODES), select a curated subset:
+    - top-VIZ_TOP_HUBS hub nodes (by in-degree in dinov2, or clip if no dinov2)
+    - random sample to fill up to VIZ_MAX_NODES
+
+    Returns sorted list of original indices to include.
+    """
+    N = len(image_index)
+    if N <= VIZ_MAX_NODES:
+        return list(range(N))
+
+    # Compute in-degree for hub selection
+    nn_map = nn_map_d if nn_map_d is not None else nn_map_c
+    in_degree = np.zeros(N, dtype=np.int32)
+    for nn in nn_map:
+        in_degree[nn] += 1
+
+    # Top hubs
+    top_hubs = set(np.argsort(in_degree)[-VIZ_TOP_HUBS:].tolist())
+
+    # Random sample for remaining slots
+    rng = np.random.default_rng(42)
+    remaining_pool = [i for i in range(N) if i not in top_hubs]
+    n_random = VIZ_MAX_NODES - len(top_hubs)
+    random_sample = set(rng.choice(remaining_pool, size=min(n_random, len(remaining_pool)), replace=False).tolist())
+
+    selected = sorted(top_hubs | random_sample)
+    console.print(
+        f"  [dim]Large dataset: sampling {len(selected)} of {N} nodes for visualization "
+        f"(top {len(top_hubs)} hubs + {len(random_sample)} random).[/dim]"
+    )
+    return selected
+
+
 def run_export(
     embeddings_dir: Path,
     results_dir: Path,
@@ -69,15 +108,25 @@ def run_export(
 
     console.print(Panel("  [bold]Export for Visualization[/bold]", expand=False))
 
-    # 1. Load chain results
+    # 1. Load chain results (at least one model required)
     console.print("[1/4] Loading chain results...", end="  ")
-    chains_d = _load_json(results_dir / "chains_dinov2.json", "trace --model dinov2")
-    chains_c = _load_json(results_dir / "chains_clip.json", "trace --model clip")
-    console.print("[green]✓[/green]")
+    chains_d_path = results_dir / "chains_dinov2.json"
+    chains_c_path = results_dir / "chains_clip.json"
+    nn_d_path = results_dir / "nn_map_dinov2.npy"
+    nn_c_path = results_dir / "nn_map_clip.npy"
 
-    # Load nn_maps
-    nn_d = np.load(results_dir / "nn_map_dinov2.npy").tolist()
-    nn_c = np.load(results_dir / "nn_map_clip.npy").tolist()
+    if not chains_d_path.exists() and not chains_c_path.exists():
+        console.print(
+            f"\n[red]No chain results found.[/red] "
+            "Run [bold]python main.py trace --model all[/bold] first."
+        )
+        raise SystemExit(1)
+
+    chains_d = _load_json(chains_d_path, "trace --model dinov2") if chains_d_path.exists() else None
+    chains_c = _load_json(chains_c_path, "trace --model clip") if chains_c_path.exists() else None
+    nn_d = np.load(nn_d_path).tolist() if nn_d_path.exists() else None
+    nn_c = np.load(nn_c_path).tolist() if nn_c_path.exists() else None
+    console.print("[green]✓[/green]")
 
     # 2. Load stats
     console.print("[2/4] Loading analysis stats...", end="  ")
@@ -95,9 +144,17 @@ def run_export(
     image_index = _load_json(idx_path, "embed")
     N = len(image_index)
 
-    # 3. Generate thumbnails
-    console.print("[3/4] Generating thumbnails (64x64)...")
-    thumbnails = []
+    # Determine if we need to subsample for visualization
+    viz_indices = _select_viz_nodes(image_index, nn_d, nn_c)
+    viz_n = len(viz_indices)
+    sampled = viz_n < N
+
+    # Build index remapping: original_id -> viz_id (for edges within the viz subset)
+    idx_remap = {orig: viz for viz, orig in enumerate(viz_indices)}
+
+    # 3. Generate thumbnails for selected nodes only
+    console.print(f"[3/4] Generating thumbnails ({thumb_size}x{thumb_size}) for {viz_n} nodes...")
+    thumbnails = {}  # orig_id -> b64
     failed_thumbs = 0
     t0 = time.time()
 
@@ -109,17 +166,19 @@ def run_export(
         TextColumn(" | {task.fields[rate]:.0f} img/s"),
         console=console,
     ) as progress:
-        task = progress.add_task("Thumbnails", total=N, rate=0)
-        for i, entry in enumerate(image_index):
+        task = progress.add_task("Thumbnails", total=viz_n, rate=0)
+        for pos, orig_i in enumerate(viz_indices):
+            entry = image_index[orig_i]
             b64 = _encode_thumbnail(entry["path"], thumb_size)
-            if b64 == _grey_placeholder_b64(thumb_size):
+            placeholder = _grey_placeholder_b64(thumb_size)
+            if b64 == placeholder:
                 failed_thumbs += 1
-            thumbnails.append(b64)
+            thumbnails[orig_i] = b64
             elapsed = time.time() - t0
-            rate = (i + 1) / elapsed if elapsed > 0 else 0
+            rate = (pos + 1) / elapsed if elapsed > 0 else 0
             progress.update(task, advance=1, rate=rate)
 
-    total_thumb_bytes = sum(len(t) for t in thumbnails)
+    total_thumb_bytes = sum(len(t) for t in thumbnails.values())
     total_thumb_mb = total_thumb_bytes / 1024 / 1024
     console.print(f"  [green]✓[/green] Thumbnail size: {total_thumb_mb:.1f} MB")
     if failed_thumbs:
@@ -131,33 +190,59 @@ def run_export(
     console.print("[4/4] Writing viz/data.json...", end="  ")
 
     images_out = []
-    for i, entry in enumerate(image_index):
+    for orig_i in viz_indices:
+        entry = image_index[orig_i]
         images_out.append({
-            "id": entry["id"],
+            "id": orig_i,
+            "viz_id": idx_remap[orig_i],
             "path": entry["path"],
             "class": entry["class"],
-            "thumbnail": thumbnails[i],
+            "thumbnail": thumbnails[orig_i],
         })
+
+    def _filter_chains(chains_dict: dict | None) -> dict | None:
+        """Keep only chains for viz_indices (as strings)."""
+        if chains_dict is None:
+            return None
+        return {str(orig_i): chains_dict["chains"][str(orig_i)]
+                for orig_i in viz_indices
+                if str(orig_i) in chains_dict["chains"]}
+
+    def _filter_nn_map(nn_map: list | None) -> list | None:
+        """Return nn_map values only for viz_indices."""
+        if nn_map is None:
+            return None
+        return [nn_map[orig_i] for orig_i in viz_indices]
 
     output = {
         "metadata": {
             "n_images": N,
-            "models": ["dinov2", "clip"],
+            "viz_n": viz_n,
+            "sampled": sampled,
+            "models": (
+                ["dinov2", "clip"] if (chains_d and chains_c)
+                else ["dinov2"] if chains_d
+                else ["clip"]
+            ),
             "generated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
         },
         "images": images_out,
-        "dinov2": {
-            "nn_map": nn_d,
-            "chains": chains_d["chains"],
-            "stats": stats_d,
-        },
-        "clip": {
-            "nn_map": nn_c,
-            "chains": chains_c["chains"],
-            "stats": stats_c,
-        },
-        "comparison": comparison,
+        "viz_indices": viz_indices,  # original indices included in viz
     }
+
+    if chains_d is not None:
+        output["dinov2"] = {
+            "nn_map": _filter_nn_map(nn_d),
+            "chains": _filter_chains(chains_d),
+            "stats": stats_d,
+        }
+    if chains_c is not None:
+        output["clip"] = {
+            "nn_map": _filter_nn_map(nn_c),
+            "chains": _filter_chains(chains_c),
+            "stats": stats_c,
+        }
+    output["comparison"] = comparison
 
     with open(out_path, "w") as f:
         json.dump(output, f)
@@ -169,6 +254,12 @@ def run_export(
         console.print(
             f"[yellow]WARNING:[/yellow] viz/data.json is {file_mb:.1f} MB (> {WARN_SIZE_MB} MB). "
             "Consider reducing thumb size with --thumb-size."
+        )
+
+    if sampled:
+        console.print(
+            f"\n[dim]Note: Visualization shows {viz_n} of {N} images "
+            f"(top {VIZ_TOP_HUBS} hubs + random sample).[/dim]"
         )
 
     console.print(

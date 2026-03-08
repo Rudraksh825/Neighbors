@@ -224,11 +224,27 @@ def extract_embeddings(
         model, transform = _load_clip(device, debug)
         extract_fn = _extract_batch_clip
 
-    all_embeddings = []
     skipped = []
     total = len(entries)
+    dim = dim_map[model_name]
     t_start = time.time()
     imgs_done = 0
+
+    # Use memmap for writing — avoids holding the full array in RAM during extraction.
+    # For N=1.2M: DINOv2 = 3.7GB, CLIP = 2.5GB. np.save-compatible format.
+    # We'll write via memmap then finalize with np.save (re-writes, but only once at end).
+    # For large N, write directly into memmap to keep RAM flat during extraction.
+    use_memmap = total > 50_000
+    if use_memmap:
+        console.print(
+            f"  [dim]Large dataset ({total} images) — writing embeddings via memmap to avoid RAM spike.[/dim]"
+        )
+        mmap_path = out_path.with_suffix(".mmap.tmp")
+        emb_mmap = np.memmap(mmap_path, dtype=np.float32, mode="w+", shape=(total, dim))
+    else:
+        all_embeddings = []
+
+    write_cursor = 0  # tracks next row to write in memmap
 
     with Progress(
         BarColumn(),
@@ -322,8 +338,18 @@ def extract_embeddings(
                     raise ValueError("NaN in embeddings")
                 raise SystemExit(1)
 
-            all_embeddings.append(feats)
-            imgs_done += len(feats)
+            # L2 normalize this batch immediately
+            batch_norms = np.linalg.norm(feats, axis=1, keepdims=True)
+            feats = feats / np.maximum(batch_norms, 1e-12)
+
+            n_feats = len(feats)
+            if use_memmap:
+                emb_mmap[write_cursor:write_cursor + n_feats] = feats
+                write_cursor += n_feats
+            else:
+                all_embeddings.append(feats)
+
+            imgs_done += n_feats
             progress.advance(task, len(batch_imgs))
 
             elapsed = time.time() - t_start
@@ -332,15 +358,24 @@ def extract_embeddings(
                 f"  Batch done  |  {imgs_done}/{total}  |  {rate:.1f} img/s"
             )
 
-    if not all_embeddings:
+    if use_memmap:
+        # Trim to actual written rows (some images may have been skipped)
+        actual_n = write_cursor
+        embeddings = np.array(emb_mmap[:actual_n])  # load into RAM for norm check + save
+        del emb_mmap
+        mmap_path.unlink(missing_ok=True)
+    else:
+        if not all_embeddings:
+            console.print("[red]No embeddings extracted.[/red]")
+            raise SystemExit(1)
+        embeddings = np.vstack(all_embeddings).astype(np.float32)
+        # L2 normalize (batches already normalized above, but vstack may lose precision)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings = embeddings / np.maximum(norms, 1e-12)
+
+    if len(embeddings) == 0:
         console.print("[red]No embeddings extracted.[/red]")
         raise SystemExit(1)
-
-    embeddings = np.vstack(all_embeddings).astype(np.float32)
-
-    # L2 normalize
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    embeddings = embeddings / norms
 
     # Norm check
     mean_n, min_n, max_n = _norm_check(embeddings)

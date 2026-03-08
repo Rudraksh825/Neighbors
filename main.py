@@ -31,12 +31,18 @@ def _ensure_dirs():
 # ── setup-data ────────────────────────────────────────────────────────────────
 
 def cmd_setup_data(args):
+    dataset_name = getattr(args, "dataset", "cifar10")
+    if dataset_name == "imagenet":
+        _setup_imagenet(args)
+    else:
+        _setup_cifar10(args)
+
+
+def _setup_cifar10(args):
     import random
     import shutil
 
     import torchvision
-    from PIL import Image
-    from rich.progress import track
     from rich.table import Table
 
     _ensure_dirs()
@@ -71,7 +77,7 @@ def cmd_setup_data(args):
         sys.exit(1)
 
     classes = dataset.classes  # 10 class names
-    N_PER_CLASS = 100
+    n_per_class = getattr(args, "n_per_class", None) or 100
     rng = random.Random(42)
 
     # Group indices by class
@@ -82,7 +88,7 @@ def cmd_setup_data(args):
     saved = []
     for cls_idx, cls_name in enumerate(classes):
         idxs = class_indices[cls_idx]
-        sampled = rng.sample(idxs, min(N_PER_CLASS, len(idxs)))
+        sampled = rng.sample(idxs, min(n_per_class, len(idxs)))
         cls_dir = DATA_DIR / cls_name
         cls_dir.mkdir(parents=True, exist_ok=True)
         for j, dataset_idx in enumerate(sampled):
@@ -106,6 +112,184 @@ def cmd_setup_data(args):
         table.add_row(cls_name, str(len(imgs)), sample)
     console.print(table)
     console.print(f"\n[green]✓[/green] {len(saved)} images saved to data/")
+
+
+def _setup_imagenet(args):
+    """
+    Download a large-scale ImageNet dataset via HuggingFace datasets and save as JPEGs.
+
+    Dataset options (controlled by --hf-dataset):
+      - ILSVRC/imagenet-1k   : full 1.2M-image ImageNet. GATED — requires HF login +
+                               accepting terms at https://huggingface.co/datasets/ILSVRC/imagenet-1k
+      - zh-plus/tiny-imagenet: 100K images, 200 classes, 64x64px. UNGATED — works without login.
+                               Good for testing the pipeline at scale before using full ImageNet.
+    """
+    import shutil
+
+    from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
+    from rich.table import Table
+
+    _ensure_dirs()
+
+    # Check existing images
+    existing = list(DATA_DIR.rglob("*.jpg")) + list(DATA_DIR.rglob("*.jpeg")) + \
+               list(DATA_DIR.rglob("*.png")) + list(DATA_DIR.rglob("*.webp"))
+    if existing and not args.force:
+        console.print(
+            f"[yellow]data/ already contains {len(existing)} image(s).[/yellow]\n"
+            "Pass [bold]--force[/bold] to overwrite."
+        )
+        return
+
+    if args.force and existing:
+        console.print(f"[yellow]--force: removing existing data/...[/yellow]")
+        shutil.rmtree(DATA_DIR)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        console.print(
+            "[red]datasets library not found.[/red] "
+            "Install with: [bold]pip install datasets[/bold]"
+        )
+        sys.exit(1)
+
+    hf_dataset = getattr(args, "hf_dataset", "zh-plus/tiny-imagenet")
+    n_per_class = getattr(args, "n_per_class", None)
+    split = "train"
+
+    # Dataset-specific guidance
+    GATED_DATASETS = {"ILSVRC/imagenet-1k", "imagenet-1k", "timm/imagenet-1k-wds"}
+    is_gated = hf_dataset in GATED_DATASETS
+
+    console.print(
+        f"Loading [bold]{hf_dataset}[/bold] (streaming) from HuggingFace Hub...\n"
+        f"  split: {split}  |  n_per_class: {'all' if not n_per_class else n_per_class}"
+    )
+
+    if is_gated:
+        console.print(
+            "[yellow]Note:[/yellow] This is a gated dataset. You must:\n"
+            f"  1. Accept terms at [link]https://huggingface.co/datasets/{hf_dataset}[/link]\n"
+            "  2. Run [bold]huggingface-cli login[/bold] (or set HF_TOKEN env var)\n"
+            "\n"
+            "  Alternatively, use the ungated Tiny ImageNet (200 classes, 100K images):\n"
+            "  [bold]python main.py setup-data --dataset imagenet --hf-dataset zh-plus/tiny-imagenet[/bold]"
+        )
+    else:
+        console.print(
+            f"[dim]Ungated dataset — no login required.[/dim]"
+        )
+
+    try:
+        dataset = load_dataset(hf_dataset, split=split, streaming=True)
+    except Exception as e:
+        err = str(e)
+        if args.debug:
+            raise
+        if "gated" in err.lower() or "authentication" in err.lower() or "401" in err:
+            console.print(
+                f"[red]Auth required for {hf_dataset}.[/red]\n"
+                f"  1. Accept terms: https://huggingface.co/datasets/{hf_dataset}\n"
+                "  2. Run: [bold]huggingface-cli login[/bold]\n"
+                "\n"
+                "  Or use the ungated alternative:\n"
+                "  [bold]python main.py setup-data --dataset imagenet --hf-dataset zh-plus/tiny-imagenet[/bold]"
+            )
+        else:
+            console.print(f"[red]Failed to load {hf_dataset}: {err}[/red]")
+        sys.exit(1)
+
+    # Detect label field and class names
+    label_field = "label"
+    image_field = "image"
+    # tiny-imagenet uses 'label' for int and may have different structure; probe first sample
+    try:
+        features = dataset.features
+        if "label" not in features and "class" in features:
+            label_field = "class"
+        if "image" not in features and "img" in features:
+            image_field = "img"
+    except Exception:
+        pass
+
+    class_counts: dict[int, int] = {}
+    class_names: dict[int, str] = {}
+    saved_total = 0
+
+    def _get_class_name(label: int) -> str:
+        if label in class_names:
+            return class_names[label]
+        try:
+            feat = dataset.features[label_field]
+            name = feat.int2str(label)
+        except Exception:
+            name = f"class_{label:04d}"
+        class_names[label] = name
+        return name
+
+    console.print("Streaming and saving images...")
+
+    with Progress(
+        BarColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Saving...", total=None)
+
+        for sample in dataset:
+            label = sample[label_field]
+            if isinstance(label, str):
+                # Some datasets use string labels directly
+                cls_name = label
+                label_key = label
+            else:
+                cls_name = _get_class_name(label)
+                label_key = label
+
+            if n_per_class and class_counts.get(label_key, 0) >= n_per_class:
+                continue
+
+            cls_dir = DATA_DIR / cls_name
+            cls_dir.mkdir(parents=True, exist_ok=True)
+
+            count = class_counts.get(label_key, 0)
+            out_path = cls_dir / f"{count:06d}.jpg"
+
+            try:
+                img = sample[image_field]
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                img.save(str(out_path), format="JPEG", quality=95)
+                class_counts[label_key] = count + 1
+                saved_total += 1
+            except OSError as e:
+                console.print(f"[red]Write failed for {out_path}: {e}[/red]")
+                sys.exit(1)
+            except Exception:
+                continue  # skip corrupt images silently
+
+            progress.update(
+                task,
+                description=f"Saved {saved_total} images ({len(class_counts)} classes)..."
+            )
+
+    console.print(f"\n[green]✓[/green] {saved_total} images saved to data/")
+    console.print(f"  Classes: {len(class_counts)}")
+
+    # Summary table (top 10 classes by count)
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Class")
+    table.add_column("Count", justify="right")
+    top = sorted(class_counts.items(), key=lambda x: -x[1])[:10]
+    for lbl, cnt in top:
+        table.add_row(str(class_names.get(lbl, lbl)), str(cnt))
+    if len(class_counts) > 10:
+        table.add_row(f"... ({len(class_counts) - 10} more classes)", "")
+    console.print(table)
 
 
 # ── embed ─────────────────────────────────────────────────────────────────────
@@ -141,6 +325,7 @@ def cmd_trace(args):
 
     _ensure_dirs()
     models = ["dinov2", "clip"] if args.model == "all" else [args.model]
+    ef = getattr(args, "ef", 50)
     for m in models:
         try:
             run_chain_traversal(
@@ -148,6 +333,7 @@ def cmd_trace(args):
                 embeddings_dir=EMBEDDINGS_DIR,
                 results_dir=RESULTS_DIR,
                 max_steps=args.max_steps,
+                ef=ef,
                 force=args.force,
                 debug=args.debug,
             )
@@ -290,8 +476,11 @@ def cmd_run_all(args):
         debug = args.debug
         force = args.force
         model = "all"
-        batch_size = 32
+        dataset = "cifar10"
+        n_per_class = None
+        batch_size = 16  # conservative default; safe for large N on MPS/CPU
         max_steps = 100
+        ef = 50
         compare = False
         thumb_size = 64
 
@@ -360,8 +549,29 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     # setup-data
-    p_setup = sub.add_parser("setup-data", help="Download and sample CIFAR-10")
+    p_setup = sub.add_parser("setup-data", help="Download and sample images (CIFAR-10 or ImageNet)")
     p_setup.add_argument("--force", action="store_true", help="Overwrite existing data")
+    p_setup.add_argument(
+        "--dataset",
+        choices=["cifar10", "imagenet"],
+        default="cifar10",
+        help="Dataset to download: cifar10 (default, 1K images) or imagenet (1.2M images)",
+    )
+    p_setup.add_argument(
+        "--n-per-class",
+        type=int,
+        default=None,
+        help="Limit images per class (e.g. 100 for a 100K ImageNet run). Default: all available.",
+    )
+    p_setup.add_argument(
+        "--hf-dataset",
+        default="zh-plus/tiny-imagenet",
+        help=(
+            "HuggingFace dataset ID for --dataset imagenet. "
+            "Default: zh-plus/tiny-imagenet (ungated, 100K images, 200 classes). "
+            "For full ImageNet: ILSVRC/imagenet-1k (gated, requires huggingface-cli login)."
+        ),
+    )
 
     # embed
     p_embed = sub.add_parser("embed", help="Extract embeddings")
@@ -376,6 +586,12 @@ def main():
     p_trace = sub.add_parser("trace", help="Trace NN chains")
     p_trace.add_argument("--model", choices=["dinov2", "clip", "all"], default="all")
     p_trace.add_argument("--max-steps", type=int, default=100)
+    p_trace.add_argument(
+        "--ef",
+        type=int,
+        default=50,
+        help="hnswlib query-time ef parameter (higher = more accurate, slower). Default: 50",
+    )
     p_trace.add_argument("--force", action="store_true")
 
     # analyze

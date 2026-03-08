@@ -5,52 +5,225 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>nn-chain-explorer</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f1117; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+/* ── CSS custom properties — dark theme (default) ── */
+:root {
+  --bg:          #1a1b1e;
+  --bg-panel:    #212124;
+  --bg-chart:    #18191c;
+  --border:      #3a3a3d;
+  --text:        #ececec;
+  --text-muted:  #8e8ea0;
+  --text-dim:    #56566a;
+  --accent:      #c47e3a;
+  --accent-soft: #3a3020;
+  --btn-bg:      #2a2a2e;
+  --btn-active:  #c47e3a;
+  --btn-active-border: #d99050;
+  --btn-hover:   #333338;
+  --link-stroke: #5a5a6e;
+  --link-arrow:  #5a5a6e;
+  --cycle-ring:  #d4a843;
+  --chain-arrow-color: #6a6a7e;
+  --cycle-marker-color: #d4a843;
+  --select-bg:   #2a2a2e;
+  --overlay-bg:  #1a1b1e;
+  --spinner-track: #3a3a3d;
+  --spinner-head:  #c47e3a;
+  --hist-bar:    #7a6fbd;
+  --hist-hub:    #c47e3a;
+  --axis-line:   #4a4a5a;
+  --axis-text:   #7a7a8e;
+}
 
-#header { display: flex; align-items: center; padding: 8px 16px; background: #1a1d27; border-bottom: 1px solid #2a2d3a; gap: 16px; flex-shrink: 0; }
-#header h1 { font-size: 14px; font-weight: 600; color: #a0a8c0; letter-spacing: 0.5px; }
-.model-btn { padding: 4px 12px; border-radius: 4px; border: 1px solid #3a3d4a; background: #252836; color: #a0a8c0; cursor: pointer; font-size: 12px; transition: all 0.15s; }
-.model-btn.active { background: #4a6fa5; border-color: #6a8fc5; color: #fff; }
-.model-btn:hover:not(.active) { background: #2e3140; }
-#color-select { padding: 4px 8px; background: #252836; border: 1px solid #3a3d4a; color: #e0e0e0; border-radius: 4px; font-size: 12px; }
-.sep { width: 1px; height: 20px; background: #2a2d3a; }
-#loading-overlay, #error-overlay { position: fixed; inset: 0; background: #0f1117; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 9999; gap: 16px; }
+/* ── Light theme overrides ── */
+body.light {
+  --bg:          #f5f0e8;
+  --bg-panel:    #ede8df;
+  --bg-chart:    #e8e2d8;
+  --border:      #c8bfb0;
+  --text:        #2a2520;
+  --text-muted:  #6b6258;
+  --text-dim:    #a09080;
+  --accent:      #8b5e3c;
+  --accent-soft: #e8ddd0;
+  --btn-bg:      #ddd8cf;
+  --btn-active:  #8b5e3c;
+  --btn-active-border: #a07050;
+  --btn-hover:   #d0cac0;
+  --link-stroke: #a09080;
+  --link-arrow:  #a09080;
+  --cycle-ring:  #b8860b;
+  --chain-arrow-color: #908070;
+  --cycle-marker-color: #b8860b;
+  --select-bg:   #ddd8cf;
+  --overlay-bg:  #f5f0e8;
+  --spinner-track: #c8bfb0;
+  --spinner-head:  #8b5e3c;
+  --hist-bar:    #7a6a5a;
+  --hist-hub:    #8b5e3c;
+  --axis-line:   #b0a898;
+  --axis-text:   #7a6a58;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: background 0.2s, color 0.2s;
+}
+
+#header {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+  flex-shrink: 0;
+}
+#header h1 { font-size: 14px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.5px; }
+
+.model-btn {
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--btn-bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.model-btn.active { background: var(--btn-active); border-color: var(--btn-active-border); color: #fff; }
+.model-btn:hover:not(.active) { background: var(--btn-hover); }
+
+#color-select {
+  padding: 4px 8px;
+  background: var(--select-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.sep { width: 1px; height: 20px; background: var(--border); }
+
+#theme-toggle {
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--btn-bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 0.15s;
+}
+#theme-toggle:hover { background: var(--btn-hover); }
+
+#loading-overlay, #error-overlay {
+  position: fixed; inset: 0;
+  background: var(--overlay-bg);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  z-index: 9999; gap: 16px;
+}
 #error-overlay { display: none; }
-.spinner { width: 40px; height: 40px; border: 3px solid #2a2d3a; border-top-color: #4a6fa5; border-radius: 50%; animation: spin 0.8s linear infinite; }
+.spinner {
+  width: 40px; height: 40px;
+  border: 3px solid var(--spinner-track);
+  border-top-color: var(--spinner-head);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
 @keyframes spin { to { transform: rotate(360deg); } }
-.error-box { background: #1a1d27; border: 1px solid #c0392b; border-radius: 8px; padding: 24px 32px; max-width: 500px; text-align: center; }
+.error-box {
+  background: var(--bg-panel);
+  border: 1px solid #c0392b;
+  border-radius: 8px;
+  padding: 24px 32px;
+  max-width: 500px;
+  text-align: center;
+}
 .error-box h2 { color: #e74c3c; margin-bottom: 12px; }
-.error-box code { background: #0f1117; padding: 2px 6px; border-radius: 3px; font-size: 13px; color: #7ec8e3; }
+.error-box code { background: var(--bg); padding: 2px 6px; border-radius: 3px; font-size: 13px; color: var(--accent); }
 
 #main { display: flex; flex: 1; overflow: hidden; }
 #graph-container { flex: 1; position: relative; overflow: hidden; }
 svg#graph { width: 100%; height: 100%; }
-#tooltip { position: absolute; background: #1a1d27; border: 1px solid #3a3d4a; border-radius: 6px; padding: 8px 10px; font-size: 12px; pointer-events: none; display: none; max-width: 180px; z-index: 100; }
-#tooltip img { width: 64px; height: 64px; display: block; margin-bottom: 6px; border-radius: 3px; }
-#tooltip .tt-path { color: #7a8090; font-size: 10px; word-break: break-all; }
-#tooltip .tt-class { color: #a0c8f0; font-weight: 600; }
-#tooltip .tt-hub { color: #f0c060; }
 
-#stats-panel { width: 300px; background: #1a1d27; border-left: 1px solid #2a2d3a; overflow-y: auto; padding: 12px; flex-shrink: 0; }
-#stats-panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #6a7080; margin: 12px 0 8px; }
+#tooltip {
+  position: absolute;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  pointer-events: none;
+  display: none;
+  max-width: 180px;
+  z-index: 100;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+}
+#tooltip img { width: 64px; height: 64px; display: block; margin-bottom: 6px; border-radius: 3px; }
+#tooltip .tt-path { color: var(--text-muted); font-size: 10px; word-break: break-all; }
+#tooltip .tt-class { color: var(--accent); font-weight: 600; }
+#tooltip .tt-hub { color: var(--cycle-ring); }
+
+#stats-panel {
+  width: 300px;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px;
+  flex-shrink: 0;
+}
+#stats-panel h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  margin: 12px 0 8px;
+}
 #stats-panel h3:first-child { margin-top: 0; }
-.chart-container { background: #0f1117; border-radius: 4px; padding: 4px; margin-bottom: 8px; }
+.chart-container { background: var(--bg-chart); border-radius: 4px; padding: 4px; margin-bottom: 8px; }
+
 .hub-gallery { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
 .hub-thumb { position: relative; cursor: pointer; }
 .hub-thumb img { width: 100%; aspect-ratio: 1; display: block; border-radius: 3px; }
-.hub-thumb .hub-score { position: absolute; bottom: 1px; right: 2px; font-size: 9px; color: #fff; background: rgba(0,0,0,0.7); padding: 1px 3px; border-radius: 2px; }
+.hub-thumb img:hover { outline: 2px solid var(--accent); }
+.hub-thumb .hub-score {
+  position: absolute; bottom: 1px; right: 2px;
+  font-size: 9px; color: #fff;
+  background: rgba(0,0,0,0.65);
+  padding: 1px 3px; border-radius: 2px;
+}
 
-#chain-inspector { height: 110px; background: #1a1d27; border-top: 1px solid #2a2d3a; flex-shrink: 0; padding: 8px 12px; overflow-x: auto; display: flex; align-items: center; gap: 8px; }
-#chain-inspector .ci-empty { color: #4a5060; font-size: 13px; }
+#chain-inspector {
+  height: 110px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  padding: 8px 12px;
+  overflow-x: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#chain-inspector .ci-empty { color: var(--text-dim); font-size: 13px; }
 .chain-node { display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; }
 .chain-node img { width: 64px; height: 64px; border-radius: 4px; border: 2px solid transparent; }
-.chain-node.cycle-node img { border-color: #f0c060; }
-.chain-node.active img { border-color: #4a6fa5; box-shadow: 0 0 8px #4a6fa5; }
-.chain-arrow { color: #4a5060; font-size: 18px; flex-shrink: 0; }
-.chain-cycle-marker { font-size: 18px; color: #f0c060; flex-shrink: 0; }
-.chain-meta { font-size: 11px; color: #7a8090; flex-shrink: 0; white-space: nowrap; align-self: flex-end; margin-left: 8px; }
-.chain-meta span { color: #a0c8f0; }
+.chain-node.cycle-node img { border-color: var(--cycle-ring); }
+.chain-node.active img { border-color: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.chain-arrow { color: var(--chain-arrow-color); font-size: 18px; flex-shrink: 0; }
+.chain-cycle-marker { font-size: 18px; color: var(--cycle-marker-color); flex-shrink: 0; }
+.chain-meta { font-size: 11px; color: var(--text-muted); flex-shrink: 0; white-space: nowrap; align-self: flex-end; margin-left: 8px; }
+.chain-meta span { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -73,12 +246,14 @@ svg#graph { width: 100%; height: 100%; }
   <button class="model-btn active" data-model="dinov2">DINOv2</button>
   <button class="model-btn" data-model="clip">CLIP</button>
   <div class="sep"></div>
-  <label style="font-size:12px;color:#7a8090;">Color:</label>
+  <label style="font-size:12px;color:var(--text-muted);">Color:</label>
   <select id="color-select">
     <option value="class">Class</option>
     <option value="tau">Transient length τ</option>
     <option value="hub">Hub score</option>
   </select>
+  <span id="sample-banner" style="display:none;font-size:11px;color:var(--text-muted);background:var(--accent-soft);padding:3px 8px;border-radius:4px;border:1px solid var(--border);"></span>
+  <button id="theme-toggle" title="Toggle light/dark theme">☀</button>
 </div>
 
 <div id="main">
@@ -108,9 +283,7 @@ svg#graph { width: 100%; height: 100%; }
   <span class="ci-empty">Click a node to inspect its chain.</span>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"
-  onerror="showError('D3 not loaded','D3 failed to load from CDN. Internet required for visualization.')">
-</script>
+<script src="./d3.min.js"></script>
 <script>
 (function() {
 'use strict';
@@ -151,6 +324,17 @@ fetch('./data.json')
   .then(data => {
     G = data;
     document.getElementById('loading-overlay').style.display = 'none';
+    // Show sampling banner if dataset was subsampled
+    if (data.metadata && data.metadata.sampled) {
+      const banner = document.getElementById('sample-banner');
+      if (banner) {
+        banner.textContent =
+          `Showing ${(data.metadata.viz_n || data.images.length).toLocaleString()} of ` +
+          `${(data.metadata.n_images || '?').toLocaleString()} images ` +
+          `(top hubs + random sample)`;
+        banner.style.display = 'inline-block';
+      }
+    }
     init();
   })
   .catch(err => {
@@ -163,7 +347,26 @@ fetch('./data.json')
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
+function getThemeColor(varName) {
+  return getComputedStyle(document.body).getPropertyValue(varName).trim();
+}
+
 function init() {
+  // Theme toggle
+  const themeBtn = document.getElementById('theme-toggle');
+  const savedTheme = localStorage.getItem('nn-theme');
+  if (savedTheme === 'light') {
+    document.body.classList.add('light');
+    themeBtn.textContent = '☽';
+  }
+  themeBtn.addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    themeBtn.textContent = isLight ? '☽' : '☀';
+    localStorage.setItem('nn-theme', isLight ? 'light' : 'dark');
+    applyThemeToGraph();
+    updateStats();
+  });
+
   document.querySelectorAll('.model-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.model-btn').forEach(b => b.classList.remove('active'));
@@ -181,6 +384,19 @@ function init() {
 
   buildGraph();
   updateStats();
+}
+
+function applyThemeToGraph() {
+  if (!window._linkSel || !window._nodeSel) return;
+  const linkColor = getThemeColor('--link-stroke');
+  const arrowColor = getThemeColor('--link-arrow');
+  const cycleRing = getThemeColor('--cycle-ring');
+
+  window._linkSel.attr('stroke', linkColor);
+  d3.select('#arrow path').attr('fill', arrowColor);
+  window._nodeSel.select('circle.node-ring')
+    .attr('stroke', d => d.isCycle ? cycleRing : 'none');
+  updateNodeColors();
 }
 
 // ── Graph ────────────────────────────────────────────────────────────────────
@@ -252,6 +468,10 @@ function buildGraph() {
     zoomG.attr('transform', e.transform);
   }));
 
+  const linkColor = getThemeColor('--link-stroke');
+  const arrowColor = getThemeColor('--link-arrow');
+  const cycleRingColor = getThemeColor('--cycle-ring');
+
   // Draw links (arrows)
   svg.append('defs').append('marker')
     .attr('id', 'arrow')
@@ -263,15 +483,15 @@ function buildGraph() {
     .attr('orient', 'auto')
     .append('path')
     .attr('d', 'M0,-4L8,0L0,4')
-    .attr('fill', '#3a4050');
+    .attr('fill', arrowColor);
 
   const linkSel = linkG.selectAll('line')
     .data(links)
     .join('line')
-    .attr('stroke', '#2a3040')
+    .attr('stroke', linkColor)
     .attr('stroke-width', 0.8)
     .attr('marker-end', 'url(#arrow)')
-    .attr('opacity', 0.6);
+    .attr('opacity', 0.7);
 
   // Draw nodes
   const nodeSel = nodeG.selectAll('g.node')
@@ -293,7 +513,7 @@ function buildGraph() {
     .attr('class', 'node-ring')
     .attr('r', d => rScale(d.hub) + 2)
     .attr('fill', 'none')
-    .attr('stroke', d => d.isCycle ? '#f0c060' : 'none')
+    .attr('stroke', d => d.isCycle ? cycleRingColor : 'none')
     .attr('stroke-width', 2);
 
   nodeSel.append('circle')
@@ -479,7 +699,7 @@ function showChainInspector(nodeId, chain) {
     wrap.appendChild(imgEl);
 
     const label = document.createElement('div');
-    label.style.cssText = 'font-size:9px;color:#6a7080;max-width:68px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;';
+    label.style.cssText = 'font-size:9px;color:var(--text-muted);max-width:68px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;';
     label.textContent = img.class;
     wrap.appendChild(label);
 
@@ -555,17 +775,21 @@ function drawHistogram(sel, data, label) {
     .domain([0, d3.max(counts)])
     .range([h, 0]);
 
+  const axisColor = getThemeColor('--axis-line');
+  const axisText = getThemeColor('--axis-text');
+  const barColor = getThemeColor('--hist-bar');
+
   g.append('g').attr('transform', `translate(0,${h})`)
     .call(d3.axisBottom(x).tickValues(x.domain().filter((_, i) => i % Math.ceil(counts.length / 6) === 0)).tickFormat(i => Math.round(edges[i])))
-    .call(g => g.select('.domain').attr('stroke', '#3a4050'))
-    .call(g => g.selectAll('.tick line').attr('stroke', '#3a4050'))
-    .call(g => g.selectAll('.tick text').attr('fill', '#6a7080').attr('font-size', 9));
+    .call(g => g.select('.domain').attr('stroke', axisColor))
+    .call(g => g.selectAll('.tick line').attr('stroke', axisColor))
+    .call(g => g.selectAll('.tick text').attr('fill', axisText).attr('font-size', 9));
 
   g.append('g')
     .call(d3.axisLeft(y).ticks(3))
-    .call(g => g.select('.domain').attr('stroke', '#3a4050'))
-    .call(g => g.selectAll('.tick line').attr('stroke', '#3a4050'))
-    .call(g => g.selectAll('.tick text').attr('fill', '#6a7080').attr('font-size', 9));
+    .call(g => g.select('.domain').attr('stroke', axisColor))
+    .call(g => g.selectAll('.tick line').attr('stroke', axisColor))
+    .call(g => g.selectAll('.tick text').attr('fill', axisText).attr('font-size', 9));
 
   g.selectAll('rect')
     .data(counts)
@@ -574,11 +798,11 @@ function drawHistogram(sel, data, label) {
     .attr('y', d => y(d))
     .attr('width', x.bandwidth())
     .attr('height', d => h - y(d))
-    .attr('fill', '#4a6fa5')
-    .attr('opacity', 0.8);
+    .attr('fill', barColor)
+    .attr('opacity', 0.85);
 
   svg.append('text').attr('x', W / 2).attr('y', H - 2)
-    .attr('text-anchor', 'middle').attr('fill', '#6a7080').attr('font-size', 9)
+    .attr('text-anchor', 'middle').attr('fill', axisText).attr('font-size', 9)
     .text(label);
 }
 
@@ -612,17 +836,21 @@ function drawHubHistogram(sel, hubData) {
     .range([h, 0])
     .clamp(true);
 
+  const axisColorH = getThemeColor('--axis-line');
+  const axisTextH = getThemeColor('--axis-text');
+  const hubBarColor = getThemeColor('--hist-hub');
+
   g.append('g').attr('transform', `translate(0,${h})`)
     .call(d3.axisBottom(x).tickValues(x.domain().filter((_, i) => i % Math.ceil(nonZero.length / 5) === 0)))
-    .call(g => g.select('.domain').attr('stroke', '#3a4050'))
-    .call(g => g.selectAll('.tick line').attr('stroke', '#3a4050'))
-    .call(g => g.selectAll('.tick text').attr('fill', '#6a7080').attr('font-size', 9));
+    .call(g => g.select('.domain').attr('stroke', axisColorH))
+    .call(g => g.selectAll('.tick line').attr('stroke', axisColorH))
+    .call(g => g.selectAll('.tick text').attr('fill', axisTextH).attr('font-size', 9));
 
   g.append('g')
     .call(d3.axisLeft(y).ticks(3, '~s'))
-    .call(g => g.select('.domain').attr('stroke', '#3a4050'))
-    .call(g => g.selectAll('.tick line').attr('stroke', '#3a4050'))
-    .call(g => g.selectAll('.tick text').attr('fill', '#6a7080').attr('font-size', 9));
+    .call(g => g.select('.domain').attr('stroke', axisColorH))
+    .call(g => g.selectAll('.tick line').attr('stroke', axisColorH))
+    .call(g => g.selectAll('.tick text').attr('fill', axisTextH).attr('font-size', 9));
 
   g.selectAll('rect')
     .data(nonZero)
@@ -631,11 +859,11 @@ function drawHubHistogram(sel, hubData) {
     .attr('y', d => y(Math.max(d.count, 0.5)))
     .attr('width', x.bandwidth())
     .attr('height', d => h - y(Math.max(d.count, 0.5)))
-    .attr('fill', '#e07040')
-    .attr('opacity', 0.8);
+    .attr('fill', hubBarColor)
+    .attr('opacity', 0.85);
 
   svg.append('text').attr('x', W / 2).attr('y', H - 2)
-    .attr('text-anchor', 'middle').attr('fill', '#6a7080').attr('font-size', 9)
+    .attr('text-anchor', 'middle').attr('fill', axisTextH).attr('font-size', 9)
     .text('in-degree (log)');
 }
 

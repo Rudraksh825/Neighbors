@@ -1,7 +1,7 @@
 """
 NN-chain traversal and cycle detection for nn-chain-explorer.
-Uses brute-force NumPy cosine similarity (inner product on L2-normalized embeddings).
-No FAISS dependency — avoids OpenMP/Python 3.13 compatibility issues on macOS.
+Uses hnswlib (HNSW approximate NN) for scalable nearest-neighbor lookup.
+Handles N up to 1.2M+ efficiently without O(N^2) brute-force.
 """
 
 from __future__ import annotations
@@ -20,19 +20,88 @@ from rich.table import Table
 console = Console()
 
 
-def build_nn_map(embeddings: np.ndarray, debug: bool = False) -> np.ndarray:
+def build_nn_map(embeddings: np.ndarray, ef: int = 50, debug: bool = False) -> np.ndarray:
     """
-    Build nearest-neighbor map via brute-force inner product (cosine sim on L2-normalized vectors).
-    Processes in chunks to keep memory usage bounded.
+    Build nearest-neighbor map using hnswlib HNSW index.
+    Uses inner-product space ('ip') on L2-normalized vectors == cosine similarity.
     Returns int32 array of shape [N] where nn_map[i] = index of NN of image i.
+
+    Falls back to brute-force NumPy if hnswlib is unavailable.
     """
     embeddings = embeddings.astype(np.float32)
     N, dim = embeddings.shape
-    CHUNK = 256  # rows processed at once; keeps peak memory at ~256*N*4 bytes (~1GB for N=1000)
 
-    console.print(f"[1/3] Building NN index (brute-force cosine, no FAISS)...")
+    try:
+        import hnswlib  # noqa: F401
+        return _build_nn_map_hnsw(embeddings, N, dim, ef)
+    except ImportError:
+        console.print(
+            "  [yellow]hnswlib not available — falling back to brute-force NumPy.[/yellow]\n"
+            "  Install with: [bold]pip install hnswlib[/bold]"
+        )
+        return _build_nn_map_brute(embeddings, N)
+
+
+def _build_nn_map_hnsw(embeddings: np.ndarray, N: int, dim: int, ef: int) -> np.ndarray:
+    import hnswlib
+
+    console.print(f"[1/3] Building hnswlib HNSW index (ip space, M=16, ef_construction=200)...")
     t0 = time.time()
-    console.print(f"  [green]✓[/green] Ready  |  Dim: {dim}  |  N vectors: {N}")
+
+    index = hnswlib.Index(space="ip", dim=dim)
+    # M=16 is standard; ef_construction=200 gives good accuracy
+    # Memory: ~(M * 2 * 4 * N) bytes ~ 128MB for 1.2M images
+    index.init_index(max_elements=N, ef_construction=200, M=16)
+    index.add_items(embeddings, ids=np.arange(N))
+    index.set_ef(ef)  # query-time ef; higher = more accurate
+
+    t1 = time.time()
+    console.print(
+        f"  [green]✓[/green] Index built in {t1-t0:.2f}s  |  Dim: {dim}  |  N vectors: {N}"
+    )
+
+    console.print(f"[2/3] Computing NN map (batched k=2 HNSW query, ef={ef})...")
+    t0 = time.time()
+
+    # k=2: first result is self (nearest to self = self for normalized vecs),
+    # second is the true nearest neighbor
+    labels, distances = index.knn_query(embeddings, k=2)
+    # labels[:,0] should be self; labels[:,1] is true NN
+    # But HNSW is approximate — verify and handle any non-self first results
+    arange = np.arange(N)
+    first_is_self = labels[:, 0] == arange
+    nn_map = np.where(first_is_self, labels[:, 1], labels[:, 0]).astype(np.int32)
+
+    t1 = time.time()
+
+    # Self-loop check
+    self_loops = int(np.sum(nn_map == arange))
+    if self_loops > 0:
+        console.print(
+            f"  [yellow]WARNING:[/yellow] {self_loops} self-loop(s) after exclusion "
+            f"(HNSW approximate — fixing by using second result for these)."
+        )
+        # For self-loops: use labels[:,1] if labels[:,0] was self but returned self,
+        # or just use whatever is at index 1
+        bad = nn_map == arange
+        nn_map[bad] = labels[bad, 1].astype(np.int32)
+        remaining = int(np.sum(nn_map == arange))
+        if remaining > 0:
+            console.print(f"  [red]  {remaining} self-loop(s) remain after fix — may affect results.[/red]")
+    else:
+        console.print(
+            f"  [green]✓[/green] NN map computed in {t1-t0:.2f}s\n"
+            f"  [green]✓[/green] Self-exclusion check: 0 self-loops found  [green][OK][/green]"
+        )
+
+    return nn_map
+
+
+def _build_nn_map_brute(embeddings: np.ndarray, N: int) -> np.ndarray:
+    """Brute-force O(N^2) fallback — only feasible for N < ~50K."""
+    CHUNK = 256
+    console.print(f"[1/3] Building NN index (brute-force cosine, no hnswlib)...")
+    console.print(f"  [green]✓[/green] Ready  |  N: {N}")
 
     console.print(f"[2/3] Computing NN map (chunked inner-product, k=2 with self-exclusion)...")
     t0 = time.time()
@@ -42,27 +111,20 @@ def build_nn_map(embeddings: np.ndarray, debug: bool = False) -> np.ndarray:
 
     for start in range(0, N, CHUNK):
         end = min(start + CHUNK, N)
-        # sim[i, j] = dot(embeddings[start+i], embeddings[j])
         sim = embeddings[start:end] @ embeddings.T  # shape [chunk, N]
-        # Exclude self by setting diagonal to -inf
         for local_i in range(end - start):
             sim[local_i, start + local_i] = -np.inf
         nn_map[start:end] = np.argmax(sim, axis=1).astype(np.int32)
 
     t1 = time.time()
-
-    # Self-loop check
-    self_loops = np.sum(nn_map == arange)
+    self_loops = int(np.sum(nn_map == arange))
     if self_loops > 0:
-        console.print(
-            f"  [yellow]WARNING:[/yellow] {self_loops} self-loop(s) found after exclusion."
-        )
+        console.print(f"  [yellow]WARNING:[/yellow] {self_loops} self-loop(s) found.")
     else:
         console.print(
             f"  [green]✓[/green] NN map computed in {t1-t0:.2f}s\n"
             f"  [green]✓[/green] Self-exclusion check: 0 self-loops found  [green][OK][/green]"
         )
-
     return nn_map
 
 
@@ -103,11 +165,12 @@ def run_chain_traversal(
     embeddings_dir: Path,
     results_dir: Path,
     max_steps: int = 100,
+    ef: int = 50,
     force: bool = False,
     debug: bool = False,
 ) -> dict:
     """
-    Load embeddings, build FAISS index, trace all chains, save results.
+    Load embeddings, build HNSW index, trace all chains, save results.
     Returns the full chains dict.
     """
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -129,18 +192,19 @@ def run_chain_traversal(
         )
         raise SystemExit(1)
 
-    embeddings = np.load(emb_path).astype(np.float32)
+    # Load with mmap for large files — avoids holding full array in RAM unnecessarily
+    embeddings = np.load(emb_path, mmap_mode="r").astype(np.float32)
     N = len(embeddings)
 
     console.print(
         Panel(
             f"  [bold]NN-Chain Traversal — {model_name.upper()}[/bold]\n"
-            f"  N images: {N}  |  Max steps: {max_steps}",
+            f"  N images: {N}  |  Max steps: {max_steps}  |  HNSW ef: {ef}",
             expand=False,
         )
     )
 
-    nn_map = build_nn_map(embeddings, debug)
+    nn_map = build_nn_map(embeddings, ef=ef, debug=debug)
 
     # Save nn_map
     np.save(out_nn, nn_map)
@@ -151,7 +215,6 @@ def run_chain_traversal(
     chains = {}
     n_cycle = 0
     n_max = 0
-    tau_sum = 0
     tau_vals = []
     cycle_len_vals = []
     cycle_node_set = set()
@@ -181,7 +244,7 @@ def run_chain_traversal(
 
             progress.advance(task)
 
-            if (i + 1) % 100 == 0 or (i + 1) == N:
+            if (i + 1) % max(100, N // 20) == 0 or (i + 1) == N:
                 avg_tau = np.mean(tau_vals) if tau_vals else 0
                 avg_cyc = np.mean(cycle_len_vals) if cycle_len_vals else 0
                 progress.print(
@@ -237,8 +300,14 @@ def run_chain_traversal(
         )
         fp_pct = 100 * fixed_points / N
         table.add_row("[green]✓[/green]", f"Fixed points (ℓ=1): {fixed_points}/{N}  ({fp_pct:.1f}%)")
-    table.add_row("[green]✓[/green]", f"Unique cycle nodes: {len(cycle_node_set)}  ({100*len(cycle_node_set)/N:.1f}% of dataset)")
-    table.add_row("[green]✓[/green]", f"Max hub in-degree: {in_degree[max_hub_idx]}  (image {max_hub_idx} — {hub_path})")
+    table.add_row(
+        "[green]✓[/green]",
+        f"Unique cycle nodes: {len(cycle_node_set)}  ({100*len(cycle_node_set)/N:.1f}% of dataset)",
+    )
+    table.add_row(
+        "[green]✓[/green]",
+        f"Max hub in-degree: {in_degree[max_hub_idx]}  (image {max_hub_idx} — {hub_path})",
+    )
     if n_max > 0:
         table.add_row(
             "[yellow]⚠[/yellow]",
