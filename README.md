@@ -1,12 +1,8 @@
 # nn-chain-explorer
 
-A research tool for studying the **topology of learned image embedding spaces** by tracing nearest-neighbor chains. For every image in a dataset, we follow the chain of nearest neighbors until a cycle is detected — then analyze the structure of those cycles across two embedding models: DINOv2 and CLIP.
+Studies the **topology of learned image embedding spaces** by tracing nearest-neighbor chains. For every image, we follow the chain of nearest neighbors until a cycle is detected, then analyze the structure across DINOv2 and CLIP.
 
-Key quantities measured:
-- **Transient length τ(i):** how many steps before entering a cycle
-- **Cycle length ℓ(i):** length of the eventual cycle
-- **Hub score h(i):** how many images point to image i as their nearest neighbor
-- **Basin of attraction:** how many images eventually flow into a given cycle
+Key quantities: transient length τ(i), cycle length ℓ(i), hub score h(i), basin of attraction.
 
 ---
 
@@ -16,199 +12,75 @@ Key quantities measured:
 pip install -r requirements.txt
 ```
 
-First-time model downloads:
-- DINOv2 weights: ~330 MB (downloaded automatically via torch.hub)
-- CLIP weights: ~350 MB (downloaded automatically via open_clip)
+Model weights (~330MB DINOv2, ~350MB CLIP) download automatically on first run.
 
 ---
 
 ## Quickstart
 
-Run the entire pipeline with one command:
+```bash
+# Download 100K images (Tiny ImageNet, no login required)
+python main.py setup-data --dataset imagenet
 
+# Extract embeddings, trace chains, analyze, export
+python main.py embed --model all
+python main.py trace --model all
+python main.py analyze --model all
+python main.py export
+
+# Open the analysis notebook
+jupyter notebook notebooks/analysis.ipynb
+```
+
+Or run everything in one command (uses CIFAR-10, 1K images):
 ```bash
 python main.py run-all
 ```
 
-This downloads data, extracts embeddings, traces chains, analyzes results, and generates the visualization. Then open the visualization:
-
-```bash
-python -m http.server 8080 --directory viz
-# Open http://localhost:8080/index.html in your browser
-```
-
 ---
 
-## Step-by-Step Walkthrough
+## Datasets
 
-### 1. Download and sample data
-
+**Tiny ImageNet** (default for scale experiments — ungated, no login needed):
 ```bash
-python main.py setup-data
+python main.py setup-data --dataset imagenet                        # 100K images, 200 classes
+python main.py setup-data --dataset imagenet --n-per-class 50       # 10K images
 ```
 
-Downloads CIFAR-10 test split and samples 1000 images (100 per class, stratified, seed=42) into `data/{class_name}/`.
-
-Expected output:
-```
-┌──────────┬───────┬──────────────────────────┐
-│ Class    │ Count │ Sample                   │
-├──────────┼───────┼──────────────────────────┤
-│ airplane │   100 │ data/airplane/0000.jpg   │
-│ ...
-✓ 1000 images saved to data/
-```
-
-### 2. Extract embeddings
-
+**CIFAR-10** (quick smoke test, 1K images):
 ```bash
-python main.py embed --model all
+python main.py setup-data                                           # 1K images, 10 classes
 ```
 
-Extracts DINOv2 (768-dim) and CLIP (512-dim) embeddings, L2-normalizes them, and saves:
-- `embeddings/dinov2.npy` — shape (1000, 768)
-- `embeddings/clip.npy` — shape (1000, 512)
-- `embeddings/index.json` — image metadata
-
-### 3. Trace NN chains
-
+**Full ImageNet-1k** (1.2M images — gated, requires HF auth):
 ```bash
-python main.py trace --model all
+huggingface-cli login   # accept terms at huggingface.co/datasets/ILSVRC/imagenet-1k
+python main.py setup-data --dataset imagenet --hf-dataset ILSVRC/imagenet-1k
 ```
 
-Builds a FAISS index, computes the nearest-neighbor map, and traces chains for every image until a cycle is detected. Saves:
-- `results/chains_dinov2.json`
-- `results/chains_clip.json`
-- `results/nn_map_dinov2.npy`
-- `results/nn_map_clip.npy`
-
-### 4. Analyze
-
-```bash
-python main.py analyze --model all
-```
-
-Computes transient/cycle length distributions, hub scores, basins of attraction, and a cross-encoder comparison. Saves:
-- `results/stats_dinov2.json`
-- `results/stats_clip.json`
-- `results/comparison.json`
-
-### 5. Export for visualization
-
-```bash
-python main.py export
-```
-
-Generates `viz/data.json` (~15 MB) containing all results plus 64×64 base64 thumbnails for every image.
-
-### 6. Open the visualization
-
-```bash
-python -m http.server 8080 --directory viz
-```
-
-Open `http://localhost:8080/index.html`. Features:
-- Force-directed graph of images connected by NN edges
-- Toggle between DINOv2 and CLIP
-- Color nodes by class, transient length, or hub score
-- Hover nodes for thumbnail preview
-- Click nodes for step-by-step chain animation
-- Stats panel with histograms and top-10 hub gallery
-
----
-
-## Checking pipeline status
-
-```bash
-python main.py status
-```
-
-Shows which output files exist and their sizes.
-
----
-
-## Using Your Own Images
-
-Place images in `data/` as flat files or in class-named subfolders:
-
-```
-data/
-├── cats/
-│   ├── img001.jpg
-│   └── img002.png
-└── dogs/
-    └── img003.jpg
-```
-
-Supported formats: `.jpg`, `.jpeg`, `.png`, `.webp`. Then run:
-
-```bash
-python main.py embed --model all
-python main.py trace --model all
-python main.py analyze --model all
-python main.py export
-```
-
-If images are in flat `data/` (no subfolders), class label will be `"unknown"`.
-
----
-
-## Running the Notebook
-
-```bash
-jupyter notebook notebooks/analysis.ipynb
-```
-
-Or execute non-interactively:
-
-```bash
-jupyter nbconvert --to notebook --execute notebooks/analysis.ipynb
-```
-
-The notebook includes UMAP projections, hub galleries, and cross-encoder comparison plots. All cells have try/except blocks that print friendly messages if results files are missing.
-
----
-
-## GPU Acceleration
-
-**Apple Silicon (M1/M2/M3):** MPS is used automatically. No changes needed.
-
-**CUDA:** The device detection order is CUDA → MPS → CPU. If you have an NVIDIA GPU, CUDA will be used automatically.
-
-For faster FAISS on CUDA, replace `faiss-cpu` with `faiss-gpu` in `requirements.txt`:
-```
-faiss-gpu>=1.7.4
-```
+**Custom images:** place `.jpg/.png/.webp` files in `data/` (flat or in class-named subfolders), then run `embed` → `trace` → `analyze` → `export`.
 
 ---
 
 ## CLI Reference
 
 ```bash
-python main.py setup-data                    # download + sample 1000 images
-python main.py embed --model dinov2          # extract DINOv2 embeddings
-python main.py embed --model clip            # extract CLIP embeddings
-python main.py embed --model all             # both
-python main.py trace --model dinov2          # trace chains
-python main.py trace --model all             # both models
-python main.py analyze --model all           # stats + cross-encoder comparison
-python main.py analyze --compare             # cross-encoder comparison only
-python main.py export                        # generate viz/data.json
-python main.py status                        # show what's been computed
-python main.py run-all                       # full pipeline
-
-# Flags
---force           re-run even if output exists
---debug           show full Python tracebacks
---batch-size N    override batch size for embed (default: 32)
---max-steps N     override max chain steps for trace (default: 100)
+python main.py setup-data [--dataset cifar10|imagenet] [--n-per-class N] [--hf-dataset HF_ID]
+python main.py embed      --model dinov2|clip|all  [--batch-size 32] [--force]
+python main.py trace      --model dinov2|clip|all  [--ef 50] [--force]
+python main.py analyze    --model dinov2|clip|all  [--compare]
+python main.py export     [--thumb-size 64] [--force]
+python main.py status
+python main.py run-all
 ```
+
+Global flags: `--debug` (full tracebacks), `--force` (overwrite existing outputs).
 
 ---
 
-## Known Limitations
+## Notes
 
-- Designed for ~1000 image scale. For 10K+ images, the D3 force simulation may be slow; consider subsampling for visualization.
-- CIFAR-10 only by default; custom datasets work but class labels won't have semantic meaning in the CIFAR-10 color scheme.
-- `viz/index.html` requires internet access to load D3 from CDN. For offline use, download D3 and reference it locally.
-- UMAP in the notebook can take 1–2 minutes on CPU for 1000 images.
+- **NN search:** uses hnswlib HNSW index (scales to 1M+ images). Falls back to brute-force NumPy if hnswlib is unavailable.
+- **Large datasets:** embeddings are written via memmap during extraction to avoid RAM spikes (DINOv2 at 100K ≈ 293MB, at 1.2M ≈ 3.7GB).
+- **Visualization:** the D3 force graph subsamples to 1000 nodes (top-500 hubs + 500 random) for datasets larger than 1000 images.
+- **Apple Silicon:** MPS is used automatically. CUDA is used if available.
